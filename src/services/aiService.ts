@@ -12,6 +12,7 @@
  */
 import axios from 'axios';
 import type { APIUsageType, APIConfig as StoreAPIConfig } from '@/stores/apiManagementStore';
+import { createServerForwardedAPIFields, shouldHydrateServerForwardedDefault } from './defaultForwardedAPI';
 
 // ============ API提供商类型 ============
 export type APIProvider = 'openai' | 'claude' | 'gemini' | 'deepseek' | 'zhipu' | 'siliconflow-embedding' | 'custom';
@@ -80,14 +81,7 @@ class AIService {
     memorySummaryMode: 'raw',
     initMode: 'generate',
     maxRetries: 1, // 默认重试1次
-    customAPI: {
-      provider: 'openai',
-      url: '',
-      apiKey: '',
-      model: 'gpt-4o',
-      temperature: 0.7,
-      maxTokens: 8192  // 输出token上限，使用8192兼容DeepSeek等API
-    }
+    customAPI: createServerForwardedAPIFields()
   };
 
   // 用于取消正在进行的请求
@@ -191,18 +185,33 @@ class AIService {
     this.config.mode = this.isTavernEnvironment() ? 'tavern' : 'custom';
   }
 
+  private hydrateServerForwardedDefault() {
+    if (shouldHydrateServerForwardedDefault(this.config.customAPI)) {
+      this.config.customAPI = createServerForwardedAPIFields();
+    }
+  }
+
   private loadConfig() {
     try {
       const saved = localStorage.getItem('ai_service_config');
       if (saved) {
         const parsed = JSON.parse(saved);
-        this.config = { ...this.config, ...parsed };
+        this.config = {
+          ...this.config,
+          ...parsed,
+          customAPI: {
+            ...this.config.customAPI,
+            ...parsed.customAPI
+          }
+        };
+        this.hydrateServerForwardedDefault();
         console.log('[AI服务] 配置已加载:', this.config.mode);
         // 强制按运行环境选择默认模式：酒馆=酒馆API，非酒馆=自定义API
         this.syncModeWithEnvironment();
         return;
       }
       // 没有保存配置时：酒馆默认用酒馆模式，网页版默认用自定义API
+      this.hydrateServerForwardedDefault();
       this.syncModeWithEnvironment();
     } catch (e) {
       console.error('[AI服务] 加载配置失败:', e);
@@ -1157,6 +1166,17 @@ class AIService {
     messagesForEstimate: Array<{ content: string }>,
     requestedMaxTokens: number
   ): number {
+    // 某些模型的输出 token 上限远小于上下文窗口，需单独限制
+    const m = (model || '').toLowerCase();
+    const outputCap = (() => {
+      if (m.includes('deepseek-chat') || m === 'deepseek-chat') return 8192;
+      if (m.includes('deepseek-reasoner')) return 8000;
+      return null;
+    })();
+    if (outputCap) {
+      requestedMaxTokens = Math.min(requestedMaxTokens, outputCap);
+    }
+
     const contextWindow = this.getApproxContextWindow(provider, model);
     if (!contextWindow) return requestedMaxTokens;
 

@@ -56,17 +56,67 @@ export function buildBackendUrl(path: string): string {
   return `${baseUrl}${suffix}`;
 }
 
+const BACKEND_VERSION_TIMEOUT_MS = 1500;
+const BACKEND_VERSION_CACHE_TTL_MS = 10000;
+
+let cachedBackendVersion: string | null = null;
+let cachedBackendVersionExpiresAt = 0;
+let inflightVersionRequest: Promise<string | null> | null = null;
+
 export async function fetchBackendVersion(): Promise<string | null> {
-  try {
-    const url = buildBackendUrl('/api/v1/version');
-    const response = await fetch(url, { method: 'GET' });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (data && typeof data.version !== 'undefined') {
-      return String(data.version);
-    }
-  } catch {
-    return null;
+  const now = Date.now();
+  if (cachedBackendVersionExpiresAt > now) {
+    return cachedBackendVersion;
   }
-  return null;
+
+  if (inflightVersionRequest) {
+    return inflightVersionRequest;
+  }
+
+  inflightVersionRequest = (async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), BACKEND_VERSION_TIMEOUT_MS);
+
+    try {
+      const url = buildBackendUrl('/api/v1/version');
+      const response = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        cachedBackendVersion = null;
+        cachedBackendVersionExpiresAt = Date.now() + BACKEND_VERSION_CACHE_TTL_MS;
+        return null;
+      }
+
+      const data = await response.json();
+      const cloudEnabled =
+        data?.cloud_enabled === false ||
+        data?.capabilities?.cloud === false;
+      if (cloudEnabled) {
+        cachedBackendVersion = null;
+        cachedBackendVersionExpiresAt = Date.now() + BACKEND_VERSION_CACHE_TTL_MS;
+        return null;
+      }
+
+      if (data && typeof data.version !== 'undefined') {
+        cachedBackendVersion = String(data.version);
+        cachedBackendVersionExpiresAt = Date.now() + BACKEND_VERSION_CACHE_TTL_MS;
+        return cachedBackendVersion;
+      }
+    } catch {
+      cachedBackendVersion = null;
+      cachedBackendVersionExpiresAt = Date.now() + BACKEND_VERSION_CACHE_TTL_MS;
+      return null;
+    } finally {
+      window.clearTimeout(timeoutId);
+      inflightVersionRequest = null;
+    }
+    cachedBackendVersion = null;
+    cachedBackendVersionExpiresAt = Date.now() + BACKEND_VERSION_CACHE_TTL_MS;
+    return null;
+  })();
+
+  return inflightVersionRequest;
 }

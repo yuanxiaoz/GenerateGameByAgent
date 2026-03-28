@@ -271,7 +271,7 @@ const showSettingsModal = ref(false);
 const showAPIModal = ref(false);
 const showSponsorModal = ref(false);
 const showPromptModal = ref(false);
-const backendReady = ref(isBackendConfigured());
+const backendReady = ref(false);
 const displayVersion = computed(() => (
   backendReady.value ? (backendVersion.value ?? '同步中') : APP_VERSION
 ));
@@ -638,11 +638,13 @@ const showHelp = () => {
 
 // --- 生命周期钩子 ---
 onMounted(async () => {
-  if (backendReady.value) {
-    const fetchedVersion = await fetchBackendVersion();
-    if (fetchedVersion) {
-      backendVersion.value = fetchedVersion;
-    }
+  if (isBackendConfigured()) {
+    void fetchBackendVersion().then((fetchedVersion) => {
+      if (fetchedVersion) {
+        backendReady.value = true;
+        backendVersion.value = fetchedVersion;
+      }
+    });
   }
   // 0. 等待 characterStore 初始化完成（加载 IndexedDB 数据）
   console.log('[App] 等待 characterStore 初始化...');

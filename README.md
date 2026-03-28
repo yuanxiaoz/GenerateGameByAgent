@@ -127,11 +127,16 @@ git push origin v3.7.0
 后端用于提供账号/存档等 API，默认使用 SQLite，开箱即用。
 
 ```bash
+cp server/.env.example server/.env
 pip install -r server/requirements.txt
 uvicorn server.main:app --reload --port 12345
 ```
 
 环境变量配置见 `server/.env.example`
+
+如果你要开启“服务器内置 API”模式，让玩家不用填写自己的模型密钥，请看：
+
+- [服务器内置 API 部署指南](./docs/server-managed-deployment.md)
 
 ---
 

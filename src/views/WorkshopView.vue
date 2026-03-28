@@ -410,7 +410,7 @@ import {
 const router = useRouter();
 const characterStore = useCharacterStore();
 
-const backendReady = ref(isBackendConfigured());
+const backendReady = ref(false);
 const backendVersion = ref<string | null>(null);
 const effectiveVersion = computed(() => {
   if (!backendReady.value) {
@@ -486,11 +486,11 @@ const refreshAuth = async () => {
 };
 
 onMounted(async () => {
-  if (!backendReady.value) return;
+  if (!isBackendConfigured()) return;
   const fetchedVersion = await fetchBackendVersion();
-  if (fetchedVersion) {
-    backendVersion.value = fetchedVersion;
-  }
+  if (!fetchedVersion) return;
+  backendReady.value = true;
+  backendVersion.value = fetchedVersion;
   void refreshAuth();
   void refreshList();
 });

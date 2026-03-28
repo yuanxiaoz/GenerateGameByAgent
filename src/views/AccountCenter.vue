@@ -51,7 +51,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import VideoBackground from '@/components/common/VideoBackground.vue';
 import { request } from '@/services/request';
-import { isBackendConfigured } from '@/services/backendConfig';
+import { fetchBackendVersion, isBackendConfigured } from '@/services/backendConfig';
 import { toast } from '@/utils/toast';
 
 type UserProfile = {
@@ -61,7 +61,7 @@ type UserProfile = {
 };
 
 const router = useRouter();
-const backendReady = ref(isBackendConfigured());
+const backendReady = ref(false);
 const loading = ref(false);
 const profile = ref<UserProfile | null>(null);
 
@@ -105,7 +105,10 @@ const logout = () => {
 };
 
 onMounted(async () => {
-  if (!backendReady.value) return;
+  if (!isBackendConfigured()) return;
+  const version = await fetchBackendVersion();
+  if (!version) return;
+  backendReady.value = true;
   const token = localStorage.getItem('access_token');
   if (!token) {
     router.push('/login');

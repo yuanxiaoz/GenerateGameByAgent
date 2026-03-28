@@ -51,11 +51,11 @@
               </label>
               <div class="api-info">
                 <span class="api-name">{{ getDisplayName(api) }}</span>
-                <span class="api-provider" v-if="!(isTavernEnvFlag && api.id === 'default')">{{ getProviderName(api.provider) }}</span>
+                <span class="api-provider" v-if="!(isTavernEnvFlag && api.id === 'default')">{{ api.useServerManaged ? '服务器内置' : getProviderName(api.provider) }}</span>
                 <span class="api-provider tavern-tag" v-else>🍺 酒馆配置</span>
               </div>
               <div class="api-actions">
-                <button class="icon-btn" @click="testAPI(api)" :title="t('测试连接')">
+                <button class="icon-btn" @click="testAPI(api)" :title="getApiTestTitle(api)">
                   <FlaskConical :size="16" :class="{ 'loading-pulse': testingApiId === api.id }" />
                 </button>
                 <button class="icon-btn" @click="editAPI(api)" :title="t('编辑')">
@@ -92,6 +92,10 @@
                   <span class="detail-value" :class="getAPIStatus(api.id)">
                     {{ getAPIStatusText(api.id) }}
                   </span>
+                </div>
+                <div class="api-detail" v-if="api.useServerManaged">
+                  <span class="detail-label">模式:</span>
+                  <span class="detail-value">服务器内置 API</span>
                 </div>
                 <div class="api-detail" v-if="['openai', 'deepseek', 'zhipu', 'custom', 'gemini', 'claude'].includes(api.provider)">
                   <label class="json-toggle">
@@ -463,9 +467,29 @@
             <input v-model="editingAPI.name" class="form-input" :placeholder="t('例如：主力API')" />
           </div>
 
+          <div class="form-group" v-if="isEditingDefaultApi && !isTavernEnvFlag">
+            <label class="checkbox-label">
+              <input
+                type="checkbox"
+                class="form-checkbox"
+                :checked="editingAPI.useServerManaged === true"
+                @change="toggleServerManagedForEditing(($event.target as HTMLInputElement).checked)"
+              />
+              <span>使用服务器内置 API</span>
+            </label>
+            <div class="form-hint">
+              启用后，玩家无需填写自己的 API Key，前端会统一请求你部署的后端转发接口。
+            </div>
+          </div>
+
           <div class="form-group">
             <label>{{ t('API提供商') }}</label>
-            <select v-model="editingAPI.provider" class="form-select" @change="onProviderChange">
+            <select
+              v-model="editingAPI.provider"
+              class="form-select"
+              :disabled="isEditingServerManaged"
+              @change="onProviderChange"
+            >
               <option value="openai">OpenAI</option>
               <option value="claude">Claude</option>
               <option value="gemini">Gemini</option>
@@ -481,7 +505,8 @@
             <input
               v-model="editingAPI.url"
               class="form-input"
-              :placeholder="getProviderPresetUrl(editingAPI.provider || 'openai')"
+              :disabled="isEditingServerManaged"
+              :placeholder="getEditingApiUrlPlaceholder()"
             />
           </div>
 
@@ -491,8 +516,12 @@
               v-model="editingAPI.apiKey"
               type="password"
               class="form-input"
-              placeholder="sk-..."
+              :disabled="isEditingServerManaged"
+              :placeholder="getEditingApiKeyPlaceholder()"
             />
+            <div v-if="isEditingServerManaged" class="form-hint">
+              当前密钥由服务器环境变量托管，浏览器不会保存真实 Key。
+            </div>
           </div>
 
           <div class="form-group">
@@ -500,17 +529,25 @@
             <div class="model-select-wrapper">
               <div class="model-input-row">
                 <input
+                  v-if="isEditingServerManaged"
+                  class="form-input"
+                  :value="serverManagedStatus?.default_model || ''"
+                  :placeholder="'由服务器决定'"
+                  disabled
+                />
+                <input
+                  v-else
                   v-model="editingAPI.model"
                   class="form-input"
                   :placeholder="getProviderPresetModel(editingAPI.provider || 'openai')"
                   @focus="showModelDropdown = true"
                   @input="filterModels"
                 />
-                <button class="utility-btn" @click="fetchModelsForEditing" :disabled="isFetchingModels">
+                <button class="utility-btn" @click="fetchModelsForEditing" :disabled="isFetchingModels || isEditingServerManaged">
                   <RefreshCw :size="16" :class="{ 'loading-pulse': isFetchingModels }" />
                 </button>
               </div>
-              <div v-if="showModelDropdown && filteredModels.length > 0" class="model-dropdown">
+              <div v-if="!isEditingServerManaged && showModelDropdown && filteredModels.length > 0" class="model-dropdown">
                 <div
                   v-for="model in filteredModels"
                   :key="model"
@@ -521,6 +558,9 @@
                   {{ model }}
                 </div>
               </div>
+            </div>
+            <div v-if="isEditingServerManaged" class="form-hint">
+              模型由服务器配置决定，当前：{{ serverManagedStatus?.default_model || '未知' }}
             </div>
           </div>
 
@@ -606,18 +646,25 @@ import { getNsfwSettingsFromStorage, type NsfwGenderFilter } from '@/utils/nsfw'
 import { isTavernEnv } from '@/utils/tavern';
 import { toast } from '@/utils/toast';
 import { useI18n } from '@/i18n';
+import {
+  createServerForwardedAPIFields,
+  createServerForwardedDefaultApiConfig,
+} from '@/services/defaultForwardedAPI';
+import { buildBackendUrl } from '@/services/backendConfig';
 
 const { t } = useI18n();
 const apiStore = useAPIManagementStore();
 const uiStore = useUIStore();
+const SERVER_MANAGED_PROXY_TEST_TIMEOUT_MS = 8000;
 
 // 初始化加载
 onMounted(() => {
   apiStore.loadFromStorage();
+  syncDefaultAPIToService();
   loadAIServiceConfig();
   loadLocalSettings();
   loadVectorMemoryConfig();
-
+  fetchServerManagedStatus();
 });
 
 // AI服务通用配置
@@ -734,7 +781,7 @@ watch(streamingEnabled, () => {
 // 对话框状态
 const showAddDialog = ref(false);
 const showEditDialog = ref(false);
-const editingAPI = ref<Partial<APIConfig>>({
+const createBlankEditingAPI = (): Partial<APIConfig> => ({
   name: '',
   provider: 'openai',
   url: '',
@@ -742,9 +789,37 @@ const editingAPI = ref<Partial<APIConfig>>({
   model: 'gpt-4o',
   temperature: 0.7,
   maxTokens: 16000,
-  enabled: true
+  enabled: true,
+  useServerManaged: false,
+  forceJsonOutput: false
 });
+const createServerManagedEditingAPI = (base: Partial<APIConfig> = {}): Partial<APIConfig> => {
+  const normalized = createServerForwardedDefaultApiConfig({
+    name: base.name,
+    enabled: base.enabled,
+    model: base.model,
+    temperature: base.temperature,
+    maxTokens: base.maxTokens,
+    forceJsonOutput: base.forceJsonOutput
+  }) as APIConfig;
+
+  return {
+    name: normalized.name,
+    provider: normalized.provider,
+    url: normalized.url,
+    apiKey: normalized.apiKey,
+    model: normalized.model,
+    temperature: normalized.temperature,
+    maxTokens: normalized.maxTokens,
+    enabled: normalized.enabled,
+    useServerManaged: true,
+    forceJsonOutput: normalized.forceJsonOutput
+  };
+};
+const editingAPI = ref<Partial<APIConfig>>(createBlankEditingAPI());
 const editingAPIId = ref<string | null>(null);
+const isEditingDefaultApi = computed(() => editingAPIId.value === 'default');
+const isEditingServerManaged = computed(() => isEditingDefaultApi.value && editingAPI.value.useServerManaged === true);
 
 // 模型获取状态
 const isFetchingModels = ref(false);
@@ -773,6 +848,30 @@ const selectModel = (model: string) => {
 const testingApiId = ref<string | null>(null);
 const apiTestResults = ref<Record<string, 'success' | 'fail' | null>>({});
 
+interface ServerManagedProxyStatus {
+  configured?: boolean;
+  provider?: string;
+  base_url?: string;
+  default_model?: string;
+  embedding_model?: string | null;
+}
+
+const serverManagedStatus = ref<ServerManagedProxyStatus | null>(null);
+
+const fetchServerManagedStatus = async () => {
+  try {
+    const response = await fetch(buildBackendUrl('/api/v1/ai-proxy/status'), {
+      method: 'GET',
+      cache: 'no-store'
+    });
+    if (response.ok) {
+      serverManagedStatus.value = await response.json() as ServerManagedProxyStatus;
+    }
+  } catch {
+    // backend not available, leave null
+  }
+};
+
 // 获取提供商名称
 const getProviderName = (provider: APIProvider): string => {
   return API_PROVIDER_PRESETS[provider]?.name || provider;
@@ -797,8 +896,140 @@ const getProviderPresetModel = (provider: APIProvider): string => {
   return API_PROVIDER_PRESETS[provider]?.defaultModel || 'gpt-4o';
 };
 
+const getEditingApiUrlPlaceholder = (): string => {
+  if (isEditingServerManaged.value) {
+    return createServerForwardedAPIFields().url;
+  }
+  return getProviderPresetUrl(editingAPI.value.provider || 'openai');
+};
+
+const getEditingApiKeyPlaceholder = (): string => {
+  return isEditingServerManaged.value ? '由服务器托管' : 'sk-...';
+};
+
+const getApiTestTitle = (api: APIConfig): string => {
+  return api.useServerManaged ? '测试服务器代理' : t('测试连接');
+};
+
+const getErrorMessage = (error: unknown): string => {
+  return error instanceof Error ? error.message : '未知错误';
+};
+
+const fetchServerManagedProxyStatus = async (): Promise<ServerManagedProxyStatus> => {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), SERVER_MANAGED_PROXY_TEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(buildBackendUrl('/api/v1/ai-proxy/status'), {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const rawDetail = (await response.text()).trim();
+      let detail = rawDetail;
+
+      if (rawDetail) {
+        try {
+          const parsed = JSON.parse(rawDetail);
+          if (parsed && typeof parsed === 'object' && 'detail' in parsed) {
+            detail = String(parsed.detail || '').trim();
+          }
+        } catch {
+          // 后端不是 JSON 时保留原始文本
+        }
+      }
+
+      if (response.status === 404) {
+        throw new Error('未检测到服务器代理接口，请确认后端服务已启动并开放 /api/v1/ai-proxy/status');
+      }
+
+      throw new Error(
+        detail
+          ? `服务器代理状态检查失败 (${response.status})：${detail}`
+          : `服务器代理状态检查失败 (${response.status})`
+      );
+    }
+
+    const data = await response.json();
+    if (!data || typeof data !== 'object') {
+      throw new Error('服务器代理状态接口返回了无效响应');
+    }
+
+    return data as ServerManagedProxyStatus;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('连接服务器代理超时，请确认后端服务已启动');
+    }
+    if (error instanceof SyntaxError) {
+      throw new Error('服务器代理状态接口返回了无效响应');
+    }
+    throw error instanceof Error ? error : new Error('无法连接到服务器代理');
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const ensureServerManagedProxyReady = async (): Promise<void> => {
+  const status = await fetchServerManagedProxyStatus();
+
+  if (status.configured !== true) {
+    throw new Error('服务器内置 API 尚未配置，请检查后端环境变量 SERVER_MANAGED_BASE_URL 和 SERVER_MANAGED_API_KEY');
+  }
+};
+
+const formatServerManagedTestError = (error: unknown): string => {
+  const message = getErrorMessage(error);
+
+  if (message.includes('Server-managed AI is not configured')) {
+    return '服务器内置 API 尚未配置，请检查后端环境变量 SERVER_MANAGED_BASE_URL 和 SERVER_MANAGED_API_KEY';
+  }
+
+  if (message.includes('AI upstream request failed')) {
+    return `服务器代理可用，但上游模型请求失败：${message}`;
+  }
+
+  if (
+    message.includes('网络错误') ||
+    message.includes('无法连接到API服务器') ||
+    message.includes('Failed to fetch')
+  ) {
+    return '服务器代理可用，但无法连接到上游模型服务';
+  }
+
+  if (message.includes('API错误')) {
+    return `服务器代理可用，但上游模型返回错误：${message}`;
+  }
+
+  return message;
+};
+
+
+const toggleServerManagedForEditing = (enabled: boolean) => {
+  if (!isEditingDefaultApi.value) return;
+
+  if (enabled) {
+    editingAPI.value = {
+      ...editingAPI.value,
+      ...createServerManagedEditingAPI(editingAPI.value)
+    };
+    return;
+  }
+
+  editingAPI.value = {
+    ...editingAPI.value,
+    useServerManaged: false,
+    provider: 'openai',
+    url: API_PROVIDER_PRESETS.openai.url,
+    apiKey: '',
+    model: editingAPI.value.model || API_PROVIDER_PRESETS.openai.defaultModel
+  };
+};
+
 // 当提供商变化时更新默认值
 const onProviderChange = () => {
+  if (isEditingServerManaged.value) return;
   const preset = API_PROVIDER_PRESETS[editingAPI.value.provider as APIProvider];
   if (preset) {
     editingAPI.value.url = preset.url;
@@ -883,6 +1114,73 @@ const getAPIStatusText = (apiId: string): string => {
 };
 
 // 切换API启用状态
+/* legacy merge block disabled
+const getApiTestTitle = (api: APIConfig): string =>
+  api.useServerManaged ? '测试服务器代理' : '测试连接';
+
+const ensureServerManagedProxyReady = async (): Promise<ServerManagedProxyStatus> => {
+  const response = await fetch(buildBackendUrl('/api/v1/ai-proxy/status'), {
+    method: 'GET',
+    cache: 'no-store'
+  });
+
+  if (!response.ok) {
+    throw new Error(`服务器代理不可用 (${response.status})`);
+  }
+
+  const data = await response.json() as ServerManagedProxyStatus;
+  if (!data?.configured) {
+    throw new Error('服务器未配置内置 API');
+  }
+
+  return data;
+};
+
+const getApiTestSuccessMessage = (api: APIConfig): string =>
+  api.useServerManaged ? `${api.name} 服务器内置 API 连通成功` : `${api.name} 连接成功`;
+
+const getApiTestWarningMessage = (api: APIConfig): string =>
+  api.useServerManaged ? `${api.name} 服务器代理响应异常` : `${api.name} 响应异常`;
+
+const formatApiTestErrorMessage = (api: APIConfig, error: unknown): string => {
+  const message = error instanceof Error ? error.message : '未知错误';
+
+  if (!api.useServerManaged) {
+    return message;
+  }
+
+  if (message.includes('服务器代理不可用')) {
+    return `${message}，请确认后端服务已启动`;
+  }
+
+  if (message.includes('服务器未配置内置 API')) {
+    return `${message}，请检查后端环境变量`;
+  }
+
+  if (message.includes('API错误 401')) {
+    return '服务器内置 API 凭证无效或已过期';
+  }
+
+  if (message.includes('API错误 403')) {
+    return '服务器内置 API 被上游拒绝访问';
+  }
+
+  if (message.includes('API错误 429')) {
+    return '服务器内置 API 已触发上游限流';
+  }
+
+  if (message.includes('API错误 502') || message.includes('AI upstream request failed')) {
+    return '服务器代理可达，但上游模型请求失败';
+  }
+
+  if (message.includes('网络错误') || message.includes('Failed to fetch') || message.includes('NetworkError')) {
+    return '服务器代理不可用，请确认后端服务和站点反向代理正常';
+  }
+
+  return `服务器代理请求失败: ${message}`;
+};
+
+*/
 const toggleAPI = (id: string) => {
   apiStore.toggleAPI(id);
 };
@@ -893,9 +1191,29 @@ const toggleForceJson = (id: string, enabled: boolean) => {
   toast.success(enabled ? t('已启用强制JSON') : t('已关闭强制JSON'));
 };
 
+const getNormalizedEditingAPI = (): Partial<APIConfig> => {
+  if (isEditingServerManaged.value) {
+    return createServerManagedEditingAPI(editingAPI.value);
+  }
+
+  return {
+    ...editingAPI.value,
+    useServerManaged: false,
+    url: editingAPI.value.url || getProviderPresetUrl(editingAPI.value.provider as APIProvider),
+    apiKey: editingAPI.value.apiKey || '',
+    model: editingAPI.value.model || getProviderPresetModel(editingAPI.value.provider as APIProvider),
+    temperature: editingAPI.value.temperature || 0.7,
+    maxTokens: editingAPI.value.maxTokens || 16000,
+    enabled: editingAPI.value.enabled ?? true,
+    forceJsonOutput: editingAPI.value.forceJsonOutput || false
+  };
+};
+
 // 编辑API
 const editAPI = (api: APIConfig) => {
-  editingAPI.value = { ...api };
+  editingAPI.value = api.id === 'default' && api.useServerManaged
+    ? createServerManagedEditingAPI(api)
+    : { ...api, useServerManaged: api.useServerManaged === true };
   editingAPIId.value = api.id;
   showEditDialog.value = true;
 };
@@ -926,57 +1244,79 @@ const testAPI = async (api: APIConfig) => {
 
   testingApiId.value = api.id;
   try {
-    // 根据是否启用强制JSON选择不同的测试提示词
+    if (api.useServerManaged) {
+      await ensureServerManagedProxyReady();
+    }
+
     const testPrompt = api.forceJsonOutput
       ? '你正在进行API连通性测试。请按照以下JSON格式输出测试结果：\n\n示例JSON格式：\n{"status": "ok", "message": "仙途本-连通测试-OK"}\n\n请严格按照上述JSON格式输出。'
       : '你正在进行API连通性测试。请仅输出：仙途本-连通测试-OK';
 
-    // 使用直接测试方法，绕过环境检测
-    const response = await aiService.testAPIDirectly({
-      provider: api.provider,
-      url: api.url,
-      apiKey: api.apiKey,
-      model: api.model,
-      temperature: api.temperature,
-      maxTokens: 1000,
-      forceJsonOutput: api.forceJsonOutput
-    }, testPrompt);
+    const response = await aiService.testAPIDirectly(
+      {
+        provider: api.provider,
+        url: api.url,
+        apiKey: api.apiKey,
+        model: api.model,
+        temperature: api.temperature,
+        maxTokens: 1000,
+        forceJsonOutput: api.forceJsonOutput,
+      },
+      testPrompt
+    );
 
-    // 根据是否启用强制JSON进行不同的验证
     let ok = false;
     if (api.forceJsonOutput) {
       try {
         const jsonResponse = JSON.parse(response);
-        ok = jsonResponse.status === 'ok' ||
-             (jsonResponse.message && jsonResponse.message.includes('仙途本')) ||
-             response.toLowerCase().includes('ok');
+        ok =
+          jsonResponse.status === 'ok' ||
+          (jsonResponse.message && jsonResponse.message.includes('仙途本')) ||
+          response.toLowerCase().includes('ok');
       } catch {
-        // JSON解析失败，尝试普通文本匹配
-        ok = response.toLowerCase().includes('仙途本') || response.toLowerCase().includes('ok');
+        ok = response.trim().length > 0;
       }
     } else {
-      ok = response.toLowerCase().includes('仙途本') || response.toLowerCase().includes('ok');
+      ok = response.trim().length > 0;
     }
 
     apiTestResults.value[api.id] = ok ? 'success' : 'fail';
 
     if (ok) {
-      toast.success(`${api.name} ${t('连接成功')}`);
+      toast.success(
+        api.useServerManaged
+          ? `${api.name} 服务器内置 API 连通成功`
+          : `${api.name} ${t('连接成功')}`
+      );
     } else {
-      toast.warning(`${api.name} ${t('响应异常')}`);
+      toast.warning(
+        api.useServerManaged
+          ? `${api.name} 服务器代理已响应，但返回内容异常`
+          : `${api.name} ${t('响应异常')}`
+      );
     }
   } catch (error) {
     apiTestResults.value[api.id] = 'fail';
-    toast.error(`${api.name} ${t('连接失败')}: ${error instanceof Error ? error.message : '未知错误'}`);
+    const errorMessage = api.useServerManaged
+      ? formatServerManagedTestError(error)
+      : getErrorMessage(error);
+
+    toast.error(
+      api.useServerManaged
+        ? `${api.name} 服务器代理测试失败: ${errorMessage}`
+        : `${api.name} ${t('连接失败')}: ${errorMessage}`
+    );
   } finally {
     testingApiId.value = null;
   }
 };
 
+
 // 获取模型列表
 const fetchModelsForEditing = async () => {
   if (isFetchingModels.value) return;
-  if (!editingAPI.value.url || !editingAPI.value.apiKey) {
+  const normalizedAPI = getNormalizedEditingAPI();
+  if (!normalizedAPI.url || !normalizedAPI.apiKey) {
     toast.warning(t('请先填写API地址和密钥'));
     return;
   }
@@ -988,12 +1328,12 @@ const fetchModelsForEditing = async () => {
     aiService.saveConfig({
       mode: 'custom',
       customAPI: {
-        provider: editingAPI.value.provider as APIProvider,
-        url: editingAPI.value.url,
-        apiKey: editingAPI.value.apiKey,
-        model: editingAPI.value.model || 'gpt-4o',
-        temperature: editingAPI.value.temperature || 0.7,
-        maxTokens: editingAPI.value.maxTokens || 16000
+        provider: normalizedAPI.provider as APIProvider,
+        url: normalizedAPI.url!,
+        apiKey: normalizedAPI.apiKey!,
+        model: normalizedAPI.model || 'gpt-4o',
+        temperature: normalizedAPI.temperature || 0.7,
+        maxTokens: normalizedAPI.maxTokens || 16000
       }
     });
 
@@ -1018,22 +1358,25 @@ const saveAPI = () => {
     return;
   }
 
+  const normalizedAPI = getNormalizedEditingAPI();
+
   if (showEditDialog.value && editingAPIId.value) {
     // 编辑模式
-    apiStore.updateAPI(editingAPIId.value, editingAPI.value);
+    apiStore.updateAPI(editingAPIId.value, normalizedAPI);
     toast.success(t('API配置已更新'));
   } else {
     // 新增模式
     const newConfig = {
-      name: editingAPI.value.name!,
-      provider: editingAPI.value.provider as APIProvider,
-      url: editingAPI.value.url || getProviderPresetUrl(editingAPI.value.provider as APIProvider),
-      apiKey: editingAPI.value.apiKey || '',
-      model: editingAPI.value.model || getProviderPresetModel(editingAPI.value.provider as APIProvider),
-      temperature: editingAPI.value.temperature || 0.7,
-      maxTokens: editingAPI.value.maxTokens || 16000,
-      enabled: true,
-      forceJsonOutput: editingAPI.value.forceJsonOutput || false
+      name: normalizedAPI.name!,
+      provider: normalizedAPI.provider as APIProvider,
+      url: normalizedAPI.url!,
+      apiKey: normalizedAPI.apiKey || '',
+      model: normalizedAPI.model!,
+      temperature: normalizedAPI.temperature || 0.7,
+      maxTokens: normalizedAPI.maxTokens || 16000,
+      enabled: normalizedAPI.enabled ?? true,
+      useServerManaged: normalizedAPI.useServerManaged === true,
+      forceJsonOutput: normalizedAPI.forceJsonOutput || false
     };
     apiStore.addAPI(newConfig);
     toast.success(t('API配置已添加'));
@@ -1049,16 +1392,24 @@ const saveAPI = () => {
 const syncDefaultAPIToService = () => {
   const defaultAPI = apiStore.apiConfigs.find(a => a.id === 'default');
   if (defaultAPI) {
+    const syncedAPI = defaultAPI.useServerManaged
+      ? createServerForwardedAPIFields({
+          model: defaultAPI.model,
+          temperature: defaultAPI.temperature,
+          maxTokens: defaultAPI.maxTokens,
+          forceJsonOutput: defaultAPI.forceJsonOutput
+        })
+      : defaultAPI;
     aiService.saveConfig({
       mode: 'custom',
       customAPI: {
-        provider: defaultAPI.provider,
-        url: defaultAPI.url,
-        apiKey: defaultAPI.apiKey,
-        model: defaultAPI.model,
-        temperature: defaultAPI.temperature,
-        maxTokens: defaultAPI.maxTokens,
-        forceJsonOutput: defaultAPI.forceJsonOutput
+        provider: syncedAPI.provider,
+        url: syncedAPI.url,
+        apiKey: syncedAPI.apiKey,
+        model: syncedAPI.model,
+        temperature: syncedAPI.temperature,
+        maxTokens: syncedAPI.maxTokens,
+        forceJsonOutput: syncedAPI.forceJsonOutput
       }
     });
   }
@@ -1085,16 +1436,7 @@ const closeDialogs = () => {
   showAddDialog.value = false;
   showEditDialog.value = false;
   editingAPIId.value = null;
-  editingAPI.value = {
-    name: '',
-    provider: 'openai',
-    url: '',
-    apiKey: '',
-    model: 'gpt-4o',
-    temperature: 0.7,
-    maxTokens: 16000,
-    enabled: true
-  };
+  editingAPI.value = createBlankEditingAPI();
   availableModels.value = [];
 };
 

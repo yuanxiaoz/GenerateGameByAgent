@@ -81,7 +81,7 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { toast } from '../utils/toast';
 import { request } from '../services/request';
 import { waitForTurnstile, renderTurnstile, resetTurnstile, removeTurnstile } from '../services/turnstile';
-import { isBackendConfigured } from '@/services/backendConfig';
+import { fetchBackendVersion, isBackendConfigured } from '@/services/backendConfig';
 import { flushPendingTravelNotes } from '@/services/onlineLogQueue';
 
 const emit = defineEmits(['loggedIn', 'back']);
@@ -95,7 +95,7 @@ const isLoading = ref(false);
 const error = ref<string | null>(null);
 const successMessage = ref<string | null>(null);
 const isRegisterMode = ref(false);
-const backendReady = ref(isBackendConfigured());
+const backendReady = ref(false);
 
 // 安全配置（从后端获取）
 const turnstileEnabled = ref(false);
@@ -234,7 +234,10 @@ watch(turnstileEnabled, (enabled) => {
 });
 
 onMounted(async () => {
-  if (!backendReady.value) return;
+  if (!isBackendConfigured()) return;
+  const version = await fetchBackendVersion();
+  if (!version) return;
+  backendReady.value = true;
   await fetchSecuritySettings();
 });
 
