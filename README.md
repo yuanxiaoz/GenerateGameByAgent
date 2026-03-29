@@ -15,13 +15,6 @@
   <strong>AI 驱动的沉浸式修仙文字冒险游戏</strong>
 </p>
 
-<p align="center">
-  <a href="https://qm.qq.com/q/mKtqgX0FSo">💬 QQ群：1079437686</a> •
-  <a href="#功能概览">功能</a> •
-  <a href="#技术栈">技术栈</a> •
-  <a href="#快速开始">快速开始</a> •
-  <a href="#许可证">许可证</a>
-</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Vue-3-4FC08D?style=flat-square&logo=vue.js&logoColor=white" alt="Vue 3"/>
@@ -139,40 +132,12 @@ uvicorn server.main:app --reload --port 12345
 - [服务器内置 API 部署指南](./docs/server-managed-deployment.md)
 
 ---
-
-## 📖 更新日志
-
-查看完整更新历史：[CHANGELOG.md](./CHANGELOG.md)
-
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-详见 [CONTRIBUTING.md](./CONTRIBUTING.md)
-
 ---
 
 ## 📄 许可证
 
-本项目个人学习、研究免费使用。商业用途请先联系作者。
-
-详见 [LICENSE](./LICENSE) | 联系方式：QQ 1538548527
+详见 [LICENSE](./LICENSE) 
 
 ---
 
-## ☕ 支持项目
 
-如果这个项目对你有帮助，欢迎赞助支持~
-
-<p align="center">
-  <img src="https://ddct.top/weixing.jpg" width="200" alt="微信赞助"/>
-  <img src="https://ddct.top/zhifubao.jpg" width="200" alt="支付宝赞助"/>
-</p>
-
----
-
-<p align="center">
-  <sub>如果觉得有帮助，请给个 ⭐ Star 支持一下！</sub>
-</p>
