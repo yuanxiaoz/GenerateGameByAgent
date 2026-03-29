@@ -1218,11 +1218,9 @@ const validateAIResponse = (response: unknown): { isValid: boolean; errors: stri
     errors.push('缺少有效的text字段');
   }
 
-  // 检查mid_term_memory字段（必须）
-  if (!resp.mid_term_memory || typeof resp.mid_term_memory !== 'string') {
-    errors.push('缺少必要的mid_term_memory字段（中期记忆总结）');
-  } else if (resp.mid_term_memory.trim().length === 0) {
-    errors.push('mid_term_memory字段不能为空');
+  // 检查mid_term_memory字段（可选，缺失时降级为警告，不触发重试）
+  if (resp.mid_term_memory !== undefined && typeof resp.mid_term_memory !== 'string') {
+    console.warn('[AI响应校验] mid_term_memory字段类型异常，已忽略');
   }
 
   // 检查tavern_commands字段（可选）

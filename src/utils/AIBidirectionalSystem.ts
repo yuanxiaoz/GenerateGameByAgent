@@ -1802,7 +1802,12 @@ ${step1Text}
 
     const timePrefix = this._formatGameTime((saveData as any).元数据?.时间);
     const textContent = sanitizeAITextForDisplay(response.text || '').trim();
-    const midTermContent = sanitizeAITextForDisplay(response.mid_term_memory || '').trim();
+    let midTermContent = sanitizeAITextForDisplay(response.mid_term_memory || '').trim();
+    if (!midTermContent && textContent) {
+      const { textRankSummarize } = await import('@/utils/textRank');
+      midTermContent = textRankSummarize(textContent, 2, 150);
+      console.log('[中期记忆] mid_term_memory 缺失，已用 TextRank 兜底生成:', midTermContent.substring(0, 50));
+    }
 
     // 处理 text：可选写入叙事历史；可选写入短期记忆
     if (textContent) {
