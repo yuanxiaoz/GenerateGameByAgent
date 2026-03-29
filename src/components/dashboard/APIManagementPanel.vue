@@ -1193,7 +1193,11 @@ const toggleForceJson = (id: string, enabled: boolean) => {
 
 const getNormalizedEditingAPI = (): Partial<APIConfig> => {
   if (isEditingServerManaged.value) {
-    return createServerManagedEditingAPI(editingAPI.value);
+    const serverModel = serverManagedStatus.value?.default_model;
+    return createServerManagedEditingAPI({
+      ...editingAPI.value,
+      ...(serverModel ? { model: serverModel } : {})
+    });
   }
 
   return {
