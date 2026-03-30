@@ -1080,8 +1080,8 @@ ${step1Text}
               onStreamChunk: undefined,
             });
             parsedStep2 = this.parseAIResponse(String(step2Response), step2ForceJson, actionOptionsEnabled);
-            if (parsedStep2.tavern_commands && parsedStep2.tavern_commands.length > 0) break;
-            parsedStep2 = null;
+            // 只要解析成功就认为第2步成功（tavern_commands为空数组也是合法的，表示本轮无状态变更）
+            break;
           } catch (e) {
             console.warn(`[分步生成] 第2步第${attempt}次失败:`, e);
           }
